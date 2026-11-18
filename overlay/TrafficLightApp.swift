@@ -40,6 +40,13 @@ final class PanelMover: ObservableObject {
     private var lastExpandedHeight: CGFloat = 134
     private var manualWidth: CGFloat?
     private(set) var isMinimal = false
+    /// True when the user hid the panel from the close button / menu bar, so
+    /// the keep-on-top timer does not instantly bring it back.
+    var isHiddenByUser = false
+
+    /// True while the panel is collapsed to the title bar. Kept here (not only
+    /// in SwiftUI) so auto-fit never re-expands a collapsed window.
+    private(set) var isMinimized = false
     /// True while the user drags; auto-fit resizes are deferred until release
     /// so a poll landing mid-drag can't fight the movement.
     private(set) var isDragging = false
@@ -218,15 +225,36 @@ final class PanelMover: ObservableObject {
         glassPanel?.applyGlass(level: level)
     }
 
+    func hidePanel() {
+        isHiddenByUser = true
+        panel?.orderOut(nil)
+    }
+
+    func showPanel() {
+        isHiddenByUser = false
+        panel?.orderFrontRegardless()
+    }
+
     /// Collapse/expand the panel while keeping its top edge fixed on screen.
     func setMinimized(_ minimized: Bool) {
         guard let panel else { return }
+        if minimized {
+            if !isMinimized, !isMinimal, panel.frame.height > minimizedHeight + 1 {
+                // Capture the height the user actually sees, not whatever
+                // auto-fit last computed, so repeated toggles never drift.
+                lastExpandedHeight = panel.frame.height
+            }
+            isMinimized = true
+        } else {
+            isMinimized = false
+        }
         let newHeight = minimized ? minimizedHeight : lastExpandedHeight
         var frame = panel.frame
         let dy = frame.height - newHeight
-        frame.origin.y += dy
+        frame.origin.y += dy // keep the top edge fixed
         frame.size.height = newHeight
         panel.setFrame(frame, display: true)
+        if !minimized { fitToContent(lastSessions) }
     }
 
     /// Compact size for minimal (single-lamp) mode.
@@ -289,6 +317,8 @@ final class PanelMover: ObservableObject {
         // Never resize a panel the user is currently dragging — a setFrame
         // landing mid-drag visibly stutters the movement.
         if isDragging { return }
+        // Minimal mode owns a fixed single-lamp size.
+        if isMinimal { return }
         // Default auto-fit width, captured from the user-tuned overlay width.
         let baseWidth: CGFloat = 165
         let maxWidth: CGFloat = 560
@@ -313,6 +343,10 @@ final class PanelMover: ObservableObject {
             ? 88
             : header + 1 + CGFloat(visible) * rowH + (scrolled > 0 ? 16 + scrollArea : 0) + 10
 
+        // The collapsed bar keeps its height; only remember what to restore.
+        lastExpandedHeight = neededHeight
+        if isMinimized { return }
+
         var frame = panel.frame
         var changed = false
         let dw = targetWidth - frame.width
@@ -330,7 +364,6 @@ final class PanelMover: ObservableObject {
         if changed {
             panel.setFrame(frame, display: true)
         }
-        lastExpandedHeight = neededHeight
     }
 
     /// Quit the overlay app (main-actor: touches NSApp).
@@ -393,6 +426,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let reFront = { [weak self] in
             guard let self else { return }
             guard self.client?.mode != "docked" else { return }
+            guard self.mover?.isHiddenByUser != true else { return }
             self.panel?.orderFrontRegardless()
         }
         center.addObserver(forName: NSApplication.didResignActiveNotification,
@@ -412,6 +446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 guard let self, let panel = self.panel else { return }
                 guard self.client?.mode != "docked" else { return }
+                guard self.mover?.isHiddenByUser != true else { return }
                 panel.orderFrontRegardless()
                 self.ensureOnScreen(panel)
             }
@@ -430,6 +465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             panel.orderOut(nil)
         } else {
             mover?.restoreAfterUndock()
+            mover?.isHiddenByUser = false
             panel.orderFrontRegardless()
             ensureOnScreen(panel)
         }
@@ -462,7 +498,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         self.stateItem = stateItem
         menu.addItem(stateItem)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出红绿灯", action: #selector(quit), keyEquivalent: "q"))
+        let showItem = NSMenuItem(title: "显示悬浮窗", action: #selector(showPanel), keyEquivalent: "")
+        showItem.target = self
+        menu.addItem(showItem)
+        let hideItem = NSMenuItem(title: "隐藏悬浮窗", action: #selector(hidePanel), keyEquivalent: "")
+        hideItem.target = self
+        menu.addItem(hideItem)
+        let quitItem = NSMenuItem(title: "退出红绿灯", action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
+        menu.addItem(quitItem)
         item.menu = menu
         self.statusItem = item
 
@@ -480,6 +524,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             DispatchQueue.main.async { stateItem.title = label }
         }
+    }
+
+    @objc private func showPanel() {
+        mover?.showPanel()
+    }
+
+    @objc private func hidePanel() {
+        mover?.hidePanel()
     }
 
     @objc private func quit() {

@@ -87,6 +87,11 @@ DSH_TL_OVERLAY_SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.2.sdk b
 构建产物**（与 `src/*.ts` 逻辑对应，行为已在本机验证）；维护者若能在自己的工具链中构建，可重新
 生成 `lib/` 后覆盖。Swift 悬浮窗二进制已用 `swift build`（macOS 13 target）重新编译并提交。
 
+### 0.4.1 修复
+- 折叠/展开不再漂移：自动适配不再撑开折叠条，展开高度取自实际窗口高度；
+- 关闭红绿灯会取消全部订阅并退出，头部「已订阅」2 秒内同步为「订阅」；
+- 菜单栏新增「显示/隐藏悬浮窗」。
+
 ### 已知限制
 - 悬浮窗是 .nonactivatingPanel，macOS 不允许非激活 app 改变系统光标，所以缩放边缘用"画出来的
   亮条 + ↔ 徽章"提示，而不是系统 resize 光标；要真光标只能让面板抢焦点。

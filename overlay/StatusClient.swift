@@ -162,6 +162,36 @@ final class StatusClient: ObservableObject {
         URLSession.shared.dataTask(with: request).resume()
     }
 
+    /// Turn the light off for good: unsubscribe every current row (so the DSH
+    /// header chips flip back to「订阅」) and quit the overlay. The next
+    /// subscription restarts it through the plugin's auto-start.
+    func closeOverlay() {
+        let ids = sessions.map(\.sessionId)
+        guard !ids.isEmpty else {
+            NSApp.terminate(nil)
+            return
+        }
+        let group = DispatchGroup()
+        for id in ids {
+            var comps = URLComponents(string: url.absoluteString)
+            comps?.path = "/subscriptions"
+            comps?.queryItems = [URLQueryItem(name: "sessionId", value: id)]
+            guard let target = comps?.url else { continue }
+            var request = URLRequest(url: target)
+            request.httpMethod = "DELETE"
+            request.timeoutInterval = 2
+            group.enter()
+            URLSession.shared.dataTask(with: request) { _, _, _ in
+                group.leave()
+            }.resume()
+        }
+        group.notify(queue: .main) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
     /// Remove a row (unsubscribe). The bridge deletes the subscription and the
     /// next poll drops the session from the list.
     func unsubscribe(_ sessionId: String) {

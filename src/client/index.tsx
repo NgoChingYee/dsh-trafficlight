@@ -208,8 +208,19 @@ function SubscribeAction(_props: Record<string, unknown>): React.JSX.Element {
 
   React.useEffect(() => {
     let alive = true
-    void refresh().then(() => { if (alive) setState((s) => ({ ...s, subscribed: subscribedIds.has(sessionId) })) })
-    return () => { alive = false }
+    // Poll: the subscription can also change from the floating overlay's row
+    // buttons or the docked sidebar panel, so refresh the chip periodically.
+    const sync = (): void => {
+      void refresh().then(() => {
+        if (alive) setState((s) => ({ ...s, subscribed: subscribedIds.has(sessionId) }))
+      })
+    }
+    sync()
+    const timer = setInterval(sync, 2000)
+    return () => {
+      alive = false
+      clearInterval(timer)
+    }
   }, [sessionId])
 
   const onClick = async (): Promise<void> => {

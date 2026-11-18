@@ -432,7 +432,7 @@ extension TrafficLightView {
     /// (see TrafficLightHostingView.interactiveZones).
     private var closeButton: some View {
         Button {
-            mover.quit()
+            client.closeOverlay()
         } label: {
             Image(systemName: "xmark")
                 .font(.system(size: 11, weight: .bold))
@@ -442,7 +442,7 @@ extension TrafficLightView {
                 .cornerRadius(5)
         }
         .buttonStyle(.plain)
-        .help("关闭红绿灯")
+        .help("关闭红绿灯（取消所有订阅）")
     }
 
     /// Minimize / expand toggle: hides (or restores) the row list,
