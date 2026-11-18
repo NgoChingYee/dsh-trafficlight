@@ -505,8 +505,9 @@ extension TrafficLightView {
 
     private var minimizeButton: some View {
         Button {
-            let newValue = !minimized
-            withAnimation(.easeInOut(duration: 0.15)) { minimized = newValue }
+            // No withAnimation here: the layout animation makes AppKit's
+            // constraint pass resize the window and shift its origin.
+            minimized.toggle()
         } label: {
             Image(systemName: minimized ? "plus" : "minus")
                 .font(.system(size: 11, weight: .bold))

@@ -250,11 +250,26 @@ final class PanelMover: ObservableObject {
         }
         let newHeight = minimized ? minimizedHeight : lastExpandedHeight
         var frame = panel.frame
-        let dy = frame.height - newHeight
-        frame.origin.y += dy // keep the top edge fixed
+        let desiredTop = frame.origin.y + frame.height
+        frame.origin.y = desiredTop - newHeight
         frame.size.height = newHeight
         panel.setFrame(frame, display: true)
         if !minimized { fitToContent(lastSessions) }
+        // AppKit's constraint-based layout rewrites the window frame right
+        // after a collapse/expand (it keeps the content's minimum height and
+        // nudges the origin). Re-assert the intended top edge on the next
+        // runloop so repeated toggles never drift.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let panel = self.panel else { return }
+            let height = minimized ? self.minimizedHeight : self.lastExpandedHeight
+            var f = panel.frame
+            let targetY = desiredTop - height
+            if abs(f.height - height) > 0.5 || abs(f.origin.y - targetY) > 0.5 {
+                f.size.height = height
+                f.origin.y = targetY
+                panel.setFrame(f, display: true)
+            }
+        }
     }
 
     /// Compact size for minimal (single-lamp) mode.

@@ -252,7 +252,13 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ i
   窗口折叠高度一致，约束系统不再改窗口；
 - `minimizedHeight` 从 40 调整为 58；
 - `PanelMover` 记录 `isMinimized`：折叠时自动适配只更新恢复高度、不改窗口尺寸；极简模式直接跳过；
-- 折叠高度取当前实际窗口高度，展开后再对齐一次内容。
+- 折叠高度取当前实际窗口高度，展开后再对齐一次内容；
+- 按钮切换不再使用 `withAnimation`：布局动画会触发 AppKit 的约束重排并改写窗口原点；
+- `setMinimized` 在下一个 runloop 重新断言目标高度与顶边，抵消约束系统的二次改写。
+
+> 调试方法：给 `NSPanel` 子类覆盖 `setFrame(_:display:)` 打印调用栈，可以看到窗口被
+> `-[NSWindow(NSConstraintBasedLayoutInternal) _changeWindowFrameFromConstraintsIfNecessary]`
+> 改写；这正是"折叠残留磨砂区 + 顶边漂移"的来源。
 
 ## 关闭红绿灯后「已订阅」不同步
 
