@@ -206,7 +206,15 @@ final class GlassPanelView: NSView {
     private let forcesVibrancy = ProcessInfo.processInfo.environment["DSH_TL_FORCE_VIBRANCY"] == "1"
 
     init<Content: View>(rootView: Content) {
-        self.hostingView = NSHostingView(rootView: AnyView(rootView))
+        let host = NSHostingView(rootView: AnyView(rootView))
+        // PanelMover owns the window size. Without this, NSHostingView adds
+        // min/max/intrinsic size constraints from the SwiftUI content, which
+        // fight the autoresizing frame whenever the body switches between the
+        // collapsed (58pt) and expanded layouts.
+        if #available(macOS 13.0, *) {
+            host.sizingOptions = []
+        }
+        self.hostingView = host
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = 16

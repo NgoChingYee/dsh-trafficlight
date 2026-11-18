@@ -306,3 +306,28 @@ override var fittingSize: NSSize {
 3. **默认位置总在主屏**：`defaultOrigin` 优先用鼠标所在屏幕，避免多显示器时灯跑到另一块屏。
 4. **宽度适配算错**：`dw` 用 `targetWidth` 计算却把宽度设成 `neededWidth`，用户手动拉宽后
    每次自动适配都会横移一段；现在直接把宽度设为 `targetWidth`。
+
+---
+
+# 0.4.2 复盘：横向跳动与排版错位
+
+## 展开 / 拖动松手后每次左移 23pt
+
+- **定位**：录屏逐帧量绿灯坐标，`-` 折叠不位移，`+` 展开每次 −23pt，拖动松手每次 −22~−24pt；
+  23 ≈ `manualWidth(300.58) − neededWidth(277.6)`。
+- **根因**：`fitToContent` 里 `dw` 用 `targetWidth` 计算，宽度却写成了 `neededWidth`，
+  位移和实际宽度不一致。用户手动拉过宽度（UserDefaults 里有 `dsh_tl_manual_width`）才会触发，
+  干净环境不会复现。
+- **修复**：宽度直接设为 `targetWidth`，第一次对齐后 `dw = 0`。
+
+## 展开后标题被裁、底部空磨砂带；折叠条下移 12.5pt
+
+- **定位**：量渲染像素发现窗口 frame 是对的，但 SwiftUI 卡片整体上移约 12.5pt；
+  12.5 = (83 − 58) / 2，指向"SwiftUI 仍按旧高度居中排版"。
+- **根因**：在 SwiftUI 的 `.onChange` 里同步改窗口尺寸，`NSHostingView` 尚未按新尺寸重排，
+  沿用上一个状态的高度；原有异步补救只检查 frame，frame 已正确所以不会触发重排。
+- **修复**：
+  1. `.onChange` 改到下一 runloop 调 `setMinimized`；
+  2. 新增 `relayoutContent()`，改完尺寸后强制 hosting view 重排；
+  3. `NSHostingView.sizingOptions = []`，窗口尺寸完全由 `PanelMover` 管理；
+  4. 根视图 `.frame(..., alignment: .top)` 兜底，排版滞后时也只裁底部。

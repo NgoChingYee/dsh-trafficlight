@@ -259,6 +259,7 @@ final class PanelMover: ObservableObject {
         frame.size.height = newHeight
         panel.setFrame(frame, display: true)
         if !minimized { fitToContent(lastSessions) }
+        relayoutContent()
         // AppKit's constraint-based layout rewrites the window frame right
         // after a collapse/expand (it keeps the content's minimum height and
         // nudges the origin). Re-assert the intended top edge on the next
@@ -273,7 +274,23 @@ final class PanelMover: ObservableObject {
                 f.origin.y = targetY
                 panel.setFrame(f, display: true)
             }
+            // The window frame can already be right while the SwiftUI content
+            // is still laid out for the old height, so always relayout here.
+            self.relayoutContent()
         }
+    }
+
+    /// Make the hosting view match the panel and lay its SwiftUI content out
+    /// again for the current size.
+    private func relayoutContent() {
+        guard let glass = glassPanel else { return }
+        if glass.hostingView.frame != glass.bounds {
+            glass.hostingView.frame = glass.bounds
+        }
+        glass.hostingView.needsLayout = true
+        glass.needsLayout = true
+        glass.layoutSubtreeIfNeeded()
+        glass.hostingView.needsDisplay = true
     }
 
     /// Compact size for minimal (single-lamp) mode.

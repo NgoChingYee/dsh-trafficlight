@@ -127,6 +127,10 @@ struct TrafficLightView: View {
         (client.minimalMode
             ? AnyView(minimalBody)
             : (minimized ? AnyView(minimizedBody) : AnyView(fullBody)))
+            // Pin the content to the top edge. If the hosting view's layout is
+            // ever a frame behind the window size, the content now overflows
+            // at the bottom instead of being centred and clipped at the top.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .onAppear {
                 mover.setMinimal(client.minimalMode)
                 mover.fitToContent(client.sessions)
@@ -141,7 +145,13 @@ struct TrafficLightView: View {
                 mover.setMinimal(newValue)
             }
             .onChange(of: minimized) { newValue in
-                mover.setMinimized(newValue)
+                // Resize the window on the next runloop, outside SwiftUI's view
+                // update. Resizing synchronously here left NSHostingView laying
+                // out the new body with the previous height (58 <-> 83), which
+                // clipped the title on expand and shifted the bar on collapse.
+                DispatchQueue.main.async {
+                    mover.setMinimized(newValue)
+                }
             }
     }
 
