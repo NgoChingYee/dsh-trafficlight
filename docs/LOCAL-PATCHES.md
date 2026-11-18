@@ -286,3 +286,23 @@ override var fittingSize: NSSize {
 - 头部按钮每 2 秒刷新一次订阅集合，任何入口（悬浮窗行内取消、侧栏面板 ✕）都能同步；
 - 关闭按钮改为「取消全部订阅后退出」，下次订阅会自动重新拉起悬浮窗；
 - 菜单栏新增「显示悬浮窗 / 隐藏悬浮窗」，取消订阅前也可只隐藏窗口。
+
+
+## 实机日志确认与三处附带修复
+
+给真实运行的面板加上 `setFrame` 调用栈日志后确认：
+
+- 屏蔽内容固有尺寸前：每次折叠都出现
+  `-[NSWindow(NSConstraintBasedLayoutInternal) _changeWindowFrameFromConstraintsIfNecessary]`；
+- 屏蔽后：折叠/展开 6 轮、主副屏各一轮，**0 次约束改写**，顶边坐标全程不变；
+- 拖动：指针位移 +50/+30，松手后窗口落点就是松手位置，无补跳。
+
+附带发现并修复：
+
+1. **启动位置被重置**：第一个模式快照被当成「从归位状态恢复」，调用了 `restoreAfterUndock()`，
+   把刚恢复的位置又改回默认点。现在只有真正从 docked 切回 floating 才恢复。
+2. **保存的位置从未生效**：`UserDefaults` 返回的数字数组整体桥接成 `[CGFloat]`/`[NSNumber]`
+   会失败（元素可能是 NSNumber/Int/String），解码失败后静默忽略。改为逐元素兼容解码。
+3. **默认位置总在主屏**：`defaultOrigin` 优先用鼠标所在屏幕，避免多显示器时灯跑到另一块屏。
+4. **宽度适配算错**：`dw` 用 `targetWidth` 计算却把宽度设成 `neededWidth`，用户手动拉宽后
+   每次自动适配都会横移一段；现在直接把宽度设为 `targetWidth`。

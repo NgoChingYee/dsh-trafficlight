@@ -188,7 +188,11 @@ final class PanelMover: ObservableObject {
 
     /// Top-right of the main display, matching the launch position.
     private func defaultOrigin(width: CGFloat, height: CGFloat) -> NSPoint {
-        guard let screen = NSScreen.main else { return NSPoint(x: 120, y: 120) }
+        // Prefer the display the pointer is on (the one the user is working
+        // on), so the light does not open on another monitor.
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
+        guard let screen else { return NSPoint(x: 120, y: 120) }
         let visible = screen.visibleFrame
         return NSPoint(x: visible.maxX - width - 16, y: visible.maxY - height - 16)
     }
@@ -366,7 +370,10 @@ final class PanelMover: ObservableObject {
         var changed = false
         let dw = targetWidth - frame.width
         if abs(dw) > 0.5 {
-            frame.size.width = neededWidth
+            // Use the target width itself: using neededWidth here while
+            // shifting by (targetWidth - width) moved the panel sideways on
+            // every fit when the user had resized it.
+            frame.size.width = targetWidth
             frame.origin.x -= dw // keep the right edge anchored (capsule sits top-right)
             changed = true
         }
@@ -388,9 +395,20 @@ final class PanelMover: ObservableObject {
 
     func restorePosition() {
         guard let panel else { return }
-        guard let saved = UserDefaults.standard.array(forKey: positionKey) as? [CGFloat],
-              saved.count == 2 else { return }
-        panel.setFrameOrigin(NSPoint(x: saved[0], y: saved[1]))
+        // UserDefaults hands back a mixed number array; bridging it wholesale
+        // to [CGFloat] / [NSNumber] fails, which silently ignored the saved
+        // position on every launch. Decode element by element instead.
+        func number(_ value: Any) -> Double? {
+            if let n = value as? NSNumber { return n.doubleValue }
+            if let d = value as? Double { return d }
+            if let i = value as? Int { return Double(i) }
+            if let f = value as? CGFloat { return Double(f) }
+            if let s = value as? String { return Double(s) }
+            return nil
+        }
+        guard let raw = UserDefaults.standard.array(forKey: positionKey), raw.count == 2,
+              let x = number(raw[0]), let y = number(raw[1]) else { return }
+        panel.setFrameOrigin(NSPoint(x: x, y: y))
     }
 
     private func savePosition() {
@@ -406,6 +424,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var stateItem: NSMenuItem?
     private var client: StatusClient?
     private var mover: PanelMover?
+    /// Last presentation mode we acted on; the first snapshot must not count as
+    /// an "undock" (that used to reset the restored position to the default).
+    private var lastAppliedMode: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -473,13 +494,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// offscreen (not closed) so its state and position survive the round trip.
     private func applyMode(_ mode: String) {
         guard let panel else { return }
+        let previous = lastAppliedMode
+        lastAppliedMode = mode
         if mode == "docked" {
-            // Keep the floating spot so undocking does not put the panel back
-            // on top of the sidebar, where a stray drag would re-dock it.
-            mover?.rememberPreDockPosition()
+            if previous != "docked" {
+                // Keep the floating spot so undocking does not put the panel
+                // back on top of the sidebar.
+                mover?.rememberPreDockPosition()
+            }
             panel.orderOut(nil)
         } else {
-            mover?.restoreAfterUndock()
+            // Only restore the pre-dock spot when we actually came from docked.
+            // Treating the first snapshot as an undock discarded the saved
+            // position and snapped the panel back to its default origin.
+            if previous == "docked" {
+                mover?.restoreAfterUndock()
+            }
             mover?.isHiddenByUser = false
             panel.orderFrontRegardless()
             ensureOnScreen(panel)
