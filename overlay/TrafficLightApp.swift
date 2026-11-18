@@ -36,7 +36,7 @@ final class PanelMover: ObservableObject {
     private let manualWidthKey = "dsh_tl_manual_width"
     private let minWidth: CGFloat = 150
     private let maxWidth: CGFloat = 560
-    private let minimizedHeight: CGFloat = 40
+    private let minimizedHeight: CGFloat = 58
     private var lastExpandedHeight: CGFloat = 134
     private var manualWidth: CGFloat?
     private(set) var isMinimal = false

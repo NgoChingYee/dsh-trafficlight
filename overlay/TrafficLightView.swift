@@ -124,7 +124,9 @@ struct TrafficLightView: View {
     }
 
     var body: some View {
-        (client.minimalMode ? AnyView(minimalBody) : AnyView(fullBody))
+        (client.minimalMode
+            ? AnyView(minimalBody)
+            : (minimized ? AnyView(minimizedBody) : AnyView(fullBody)))
             .onAppear {
                 mover.setMinimal(client.minimalMode)
                 mover.fitToContent(client.sessions)
@@ -141,6 +143,43 @@ struct TrafficLightView: View {
             .onChange(of: minimized) { newValue in
                 mover.setMinimized(newValue)
             }
+    }
+
+    /// Collapsed layout: one compact, fixed-height bar. Its required height
+    /// matches the window's collapsed height, otherwise AppKit's constraint
+    /// layout grows the window (leaving an empty frosted area) and shifts the
+    /// top edge on every toggle.
+    private var minimizedBody: some View {
+        HStack(spacing: 8) {
+            NativeDragStrip(size: 20)
+                .frame(width: 20, height: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(client.sessions.isEmpty ? "DSH 红绿灯" : statusLabel)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.9))
+                Text(subtitle)
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.white.opacity(0.55))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            statusDot
+            dockButton
+            minimizeButton
+            closeButton
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 50)
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.black.opacity(0.45))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.18), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(4)
     }
 
     /// Full layout: persistent title bar + subscribed-session rows.

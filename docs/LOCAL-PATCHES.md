@@ -241,16 +241,18 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ i
 
 # 0.4.1 修复：折叠漂移与关闭后的订阅同步
 
-## 折叠/展开漂移、折叠后残留磨砂区
+## 折叠后残留磨砂区、反复折叠向上漂移
 
-**问题**：`fitToContent` 不知道面板处于折叠状态，状态轮询触发自动适配时会把 40pt 的折叠条重新撑回
-内容高度；反复折叠/展开时高度与顶边反复被改写，表现为整体逐渐上移、拖动松手后跳一段、内容显示不全。
+**问题**：根因不在 `fitToContent`，而是 **AppKit 的约束布局**。折叠时窗口被约束系统
+`_changeWindowFrameFromConstraintsIfNecessary` 强制撑到内容的最小高度（实测 58pt），并同时改写窗口
+原点；于是折叠后留下空磨砂区、反复切换时顶边逐次上移，拖动松手后又会补一次跳位。
 
 **修复**：
-- `PanelMover` 记录 `isMinimized`；
-- `fitToContent` 在折叠时只更新"恢复高度"、不改窗口尺寸；在极简模式下直接跳过；
-- 折叠时用**当前窗口高度**作为展开高度，而不是上一次自动适配的估值；
-- 展开后再跑一次 `fitToContent` 对齐内容。
+- 折叠态改用**独立紧凑布局** `minimizedBody`（固定 50pt 内容 + 4pt 外边距 = 58pt），其固有高度与
+  窗口折叠高度一致，约束系统不再改窗口；
+- `minimizedHeight` 从 40 调整为 58；
+- `PanelMover` 记录 `isMinimized`：折叠时自动适配只更新恢复高度、不改窗口尺寸；极简模式直接跳过；
+- 折叠高度取当前实际窗口高度，展开后再对齐一次内容。
 
 ## 关闭红绿灯后「已订阅」不同步
 
