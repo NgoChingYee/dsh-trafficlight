@@ -1,16 +1,24 @@
 import AppKit
 import SwiftUI
 
+/// AppKit entry point instead of a SwiftUI `App` scene.
+///
+/// The upstream build used a SwiftUI app whose only scene was an empty
+/// `Settings {}`. That was invisible when built with Swift 6.2 / SDK 26.2, but
+/// with the newer toolchain SwiftUI shows an empty 900×450 window at launch.
+/// The overlay only ever needs the AppKit floating panel, so start NSApp
+/// directly and keep SwiftUI for the view content only.
 @main
-struct TrafficLightApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+enum TrafficLightMain {
+    /// NSApplication.delegate is weak — keep the delegate alive here.
+    static let appDelegate = AppDelegate()
 
-    var body: some Scene {
-        // No window scene — the floating panel is created manually by the
-        // AppDelegate so SwiftUI doesn't spawn a default window.
-        Settings {
-            EmptyView()
-        }
+    static func main() {
+        setbuf(stdout, nil) // debug lines must reach the log immediately
+        let app = NSApplication.shared
+        app.delegate = appDelegate
+        app.setActivationPolicy(.accessory)
+        app.run()
     }
 }
 
@@ -21,9 +29,9 @@ struct TrafficLightApp: App {
 /// setFrameOrigin.
 final class PanelMover: ObservableObject {
     weak var panel: NSPanel?
-    /// Frosted-glass layer; its live-vibrancy recomposition is suspended while
+    /// Glass backdrop view; its live-vibrancy recomposition is suspended while
     /// dragging so window movement stays smooth.
-    weak var effectView: NSVisualEffectView?
+    weak var glassPanel: GlassPanelView?
     private let positionKey = "dsh_tl_origin"
     private let manualWidthKey = "dsh_tl_manual_width"
     private let minWidth: CGFloat = 150
@@ -36,6 +44,27 @@ final class PanelMover: ObservableObject {
     /// so a poll landing mid-drag can't fight the movement.
     private(set) var isDragging = false
     private var lastSessions: [SessionStatus] = []
+    /// Called when a drag ends inside the DSH window's sidebar dock zone, i.e.
+    /// the user dropped the light where the docked panel lives.
+    var onDockRequest: (() -> Void)?
+    private var dragStartOrigin: NSPoint?
+    private var dragStartMouse: NSPoint?
+
+    /// Which resize edge the pointer is over (drives the drawn hover hint,
+    /// since a non-activating panel cannot change the system cursor).
+    enum HoverEdge { case none, leading, trailing }
+    @Published var hoveredEdge: HoverEdge = .none
+
+    func setEdgeHover(_ edge: HoverEdge, active: Bool) {
+        if active {
+            if hoveredEdge != edge { hoveredEdge = edge }
+        } else if hoveredEdge == edge {
+            hoveredEdge = .none
+        }
+    }
+    /// Floating position captured when docking, so "取回悬浮窗" retreats to the
+    /// same place instead of landing back over the sidebar.
+    private var preDockOrigin: NSPoint?
 
     init() {
         if let saved = UserDefaults.standard.object(forKey: manualWidthKey) as? CGFloat,
@@ -44,19 +73,149 @@ final class PanelMover: ObservableObject {
         }
     }
 
-    /// Called when a native drag session begins (before performDrag blocks).
-    func beginNativeDrag() {
+    /// Mouse-down on the grip: remember the grab offset. The window only
+    /// starts moving once the pointer actually moves.
+    func beginDrag(at point: NSPoint) {
+        guard let panel, !isMinimal else { return }
         isDragging = true
-        effectView?.state = .inactive // drop live blur recomposition while moving
+        dragStartMouse = point
+        dragStartOrigin = panel.frame.origin
+        glassPanel?.setDockArmed(false)
+        glassPanel?.setEffectActive(false) // drop live blur recomposition while moving
     }
 
-    /// Called when the native drag session returns (user released the mouse).
-    func nativeDragEnded() {
+    /// Mouse-drag: translate the panel by exactly the pointer delta, so the
+    /// grip stays under the cursor instead of jumping to the window centre.
+    func continueDrag(to point: NSPoint) {
+        guard let panel, let startMouse = dragStartMouse, let startOrigin = dragStartOrigin else { return }
+        panel.setFrameOrigin(NSPoint(x: startOrigin.x + (point.x - startMouse.x),
+                                     y: startOrigin.y + (point.y - startMouse.y)))
+        // Full frost while the pointer is over the dock zone: "release to dock".
+        glassPanel?.setDockArmed(isInsideDockZone(atScreenPoint: point))
+    }
+
+    /// Mouse-up: settle size, persist position, and dock when the cursor was
+    /// released inside the dashed sidebar drop target.
+    func endDrag(at point: NSPoint) {
+        let startMouse = dragStartMouse
+        let startOrigin = dragStartOrigin
         isDragging = false
-        effectView?.state = .active
+        glassPanel?.setDockArmed(false)
+        glassPanel?.setEffectActive(true)
         savePosition()
         // Re-apply any auto-fit that was deferred during the drag.
         fitToContent(lastSessions)
+        if let startMouse, let startOrigin, let onDockRequest,
+           hypot(point.x - startMouse.x, point.y - startMouse.y) >= 24,
+           !isInsideDockZone(atScreenPoint: startMouse),
+           isInsideDockZone(atScreenPoint: point) {
+            // Remember where the drag began (outside the zone) for undocking.
+            preDockOrigin = startOrigin
+            onDockRequest()
+        }
+        dragStartMouse = nil
+        dragStartOrigin = nil
+    }
+
+    /// True when an AppKit screen point falls inside the dock zone.
+    private func isInsideDockZone(atScreenPoint point: NSPoint) -> Bool {
+        guard let dsh = panelMover_dshWindowFrame() else { return false }
+        return dockZone(for: dsh).contains(cgPoint(point.x, point.y))
+    }
+
+    /// The dock zone: the bottom slice of the DSH sidebar, right above the
+    /// account/settings row — i.e. the red box the sidebar footer occupies.
+    private func dockZone(for dsh: CGRect) -> CGRect {
+        let width = min(270, dsh.width * 0.34)
+        let height: CGFloat = 80        // the sidebar footer drop target
+        let bottomInset: CGFloat = 50   // account row + settings strip
+        return CGRect(x: dsh.minX + 4,
+                      y: dsh.maxY - bottomInset - height,
+                      width: width,
+                      height: height)
+    }
+
+    /// True when the given panel frame's centre falls into the dock zone.
+    func isInsideDockZone(_ frame: CGRect) -> Bool {
+        guard let dsh = panelMover_dshWindowFrame() else { return false }
+        let zone = dockZone(for: dsh)
+        return zone.contains(cgPoint(frame.midX, frame.midY))
+    }
+
+    /// Convert an AppKit (bottom-left origin) point to CoreGraphics window
+    /// coordinates (top-left origin of the main display). Secondary displays
+    /// above the main one naturally map to negative y, matching CG bounds.
+    private func cgPoint(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        return CGPoint(x: x, y: primaryHeight - y)
+    }
+
+    /// Capture the floating origin before the panel hides for docking.
+    func rememberPreDockPosition() {
+        guard preDockOrigin == nil, let panel else { return }
+        preDockOrigin = panel.frame.origin
+    }
+
+    /// Put the panel back on screen after undocking: the pre-dock spot when it
+    /// is still outside the dock zone, otherwise the top-right default.
+    func restoreAfterUndock() {
+        guard let panel else { return }
+        var target = preDockOrigin
+        if let candidate = target {
+            let frame = CGRect(origin: candidate, size: panel.frame.size)
+            // Never land back on the app window or inside the dock zone: the
+            // floating light should come back to open screen, not on top of
+            // the sidebar it was just docked to.
+            if isInsideDockZone(frame) {
+                target = nil
+            } else if let dsh = panelMover_dshWindowFrame(), dsh.contains(cgPoint(frame.midX, frame.midY)) {
+                target = nil
+            }
+        }
+        if target == nil {
+            target = defaultOrigin(width: panel.frame.width, height: panel.frame.height)
+        }
+        if let target { panel.setFrameOrigin(target) }
+        preDockOrigin = nil
+    }
+
+    /// Top-right of the main display, matching the launch position.
+    private func defaultOrigin(width: CGFloat, height: CGFloat) -> NSPoint {
+        guard let screen = NSScreen.main else { return NSPoint(x: 120, y: 120) }
+        let visible = screen.visibleFrame
+        return NSPoint(x: visible.maxX - width - 16, y: visible.maxY - height - 16)
+    }
+
+    /// Frame of the DSH desktop main window in CoreGraphics (top-left origin)
+    /// coordinates. No Accessibility permission is needed for window bounds.
+    private func panelMover_dshWindowFrame() -> CGRect? {
+        guard let app = NSRunningApplication.runningApplications(withBundleIdentifier: "ai.deepseek.dsh.desktop.next").first else { return nil }
+        let pid = app.processIdentifier
+        guard let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else { return nil }
+        var best: CGRect?
+        var bestArea: CGFloat = 0
+        for info in infos {
+            guard let owner = (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value, owner == pid,
+                  let layer = (info[kCGWindowLayer as String] as? NSNumber)?.intValue, layer == 0,
+                  let dict = info[kCGWindowBounds as String] as? [String: Any],
+                  let rect = CGRect(dictionaryRepresentation: dict as CFDictionary) else { continue }
+            let area = rect.width * rect.height
+            if area > bestArea {
+                bestArea = area
+                best = rect
+            }
+        }
+        return best
+    }
+
+    /// Whether the native Liquid Glass backdrop is active (macOS 26+).
+    var usesLiquidGlass: Bool { glassPanel?.usesLiquidGlass ?? false }
+
+    /// Drive the whole glass effect from the user's slider: at the low end the
+    /// blur is faint and the tint light (clear glass); at the high end the blur
+    /// is full strength and the tint deep (fully frosted).
+    func setGlassLevel(_ level: Double) {
+        glassPanel?.applyGlass(level: level)
     }
 
     /// Collapse/expand the panel while keeping its top edge fixed on screen.
@@ -68,11 +227,6 @@ final class PanelMover: ObservableObject {
         frame.origin.y += dy
         frame.size.height = newHeight
         panel.setFrame(frame, display: true)
-    }
-
-    /// Apply the user-configured window opacity (0.1..1) to the floating panel.
-    func setPanelOpacity(_ value: Double) {
-        panel?.alphaValue = CGFloat(min(1, max(0.1, value)))
     }
 
     /// Compact size for minimal (single-lamp) mode.
@@ -95,12 +249,17 @@ final class PanelMover: ObservableObject {
 
     /// Set a user-chosen width from the right-edge resize handle. The manual
     /// value takes priority over content-based auto-fit until the key is reset.
-    func setManualWidth(_ width: CGFloat) {
+    func setManualWidth(_ width: CGFloat, keepRightEdge: Bool = true) {
         guard let panel, !isMinimal else { return }
         let clamped = min(maxWidth, max(minWidth, width))
         manualWidth = clamped
         UserDefaults.standard.set(clamped, forKey: manualWidthKey)
-        setFrameKeepTopRight(width: clamped, height: panel.frame.height)
+        var frame = panel.frame
+        // Leading handle keeps the right edge pinned (grows toward the screen
+        // interior); trailing handle keeps the left edge pinned.
+        if keepRightEdge { frame.origin.x += frame.width - clamped }
+        frame.size.width = clamped
+        panel.setFrame(frame, display: true)
     }
 
     /// Resize the panel to the given size anchoring its top-right corner.
@@ -214,16 +373,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .environmentObject(mover)
         )
         mover.panel = panel
-        // Wire the frosted layer to the mover (blur suspended during drag).
-        if let content = panel.contentView {
-            for sub in content.subviews {
-                if let fx = sub as? NSVisualEffectView, mover.effectView == nil {
-                    mover.effectView = fx
-                }
-            }
-        }
+        // Wire the glass backdrop to the mover (blur suspended during drag).
+        mover.glassPanel = panel.contentView as? GlassPanelView
+        mover.glassPanel?.applyGlass(level: client.opacity)
         mover.restorePosition()
-        mover.setPanelOpacity(client.opacity) // apply persisted transparency on launch
+        client.onModeChanged = { [weak self] mode in self?.applyMode(mode) }
+        mover.onDockRequest = { [weak client] in client?.setMode("docked") }
         mover.setMinimal(client.minimalMode) // start in the persisted layout mode
         panel.orderFrontRegardless()
         self.panel = panel
@@ -235,7 +390,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Keep the panel pinned on top across every app-switch / space change.
     private func setupAlwaysOnTop() {
         let center = NotificationCenter.default
-        let reFront = { [weak self] in self?.panel?.orderFrontRegardless() }
+        let reFront = { [weak self] in
+            guard let self else { return }
+            guard self.client?.mode != "docked" else { return }
+            self.panel?.orderFrontRegardless()
+        }
         center.addObserver(forName: NSApplication.didResignActiveNotification,
                            object: nil, queue: .main, using: { _ in reFront() })
         center.addObserver(forName: NSApplication.didBecomeActiveNotification,
@@ -252,9 +411,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             DispatchQueue.main.async {
                 guard let self, let panel = self.panel else { return }
+                guard self.client?.mode != "docked" else { return }
                 panel.orderFrontRegardless()
                 self.ensureOnScreen(panel)
             }
+        }
+    }
+
+    /// Show or hide the floating panel for the current presentation mode.
+    /// In `docked` mode the in-page sidebar twin takes over; the panel parks
+    /// offscreen (not closed) so its state and position survive the round trip.
+    private func applyMode(_ mode: String) {
+        guard let panel else { return }
+        if mode == "docked" {
+            // Keep the floating spot so undocking does not put the panel back
+            // on top of the sidebar, where a stray drag would re-dock it.
+            mover?.rememberPreDockPosition()
+            panel.orderOut(nil)
+        } else {
+            mover?.restoreAfterUndock()
+            panel.orderFrontRegardless()
+            ensureOnScreen(panel)
         }
     }
 
