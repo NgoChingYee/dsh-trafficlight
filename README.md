@@ -1,241 +1,180 @@
-# dsh-trafficlight — DSH 任务状态红绿灯（订阅制多会话）
+# dsh-trafficlight — DSH 任务状态红绿灯
 
-> **Fork notice:** This repository is a fork adapted for DSH Desktop `0.2.2-rc.3`.
-> See [FORK-NOTES.md](./FORK-NOTES.md) for the packaged fixes and [LOCAL-PATCHES.md](./docs/LOCAL-PATCHES.md) for the full patch log.
+> **Fork notice：** 本仓库是面向 DSH Desktop `0.2.2-rc.3` 适配的 fork，新增了归位模式、原生
+> Liquid Glass、持续呼吸与一整套交互修复。改动明细见 [FORK-NOTES.md](./FORK-NOTES.md) 和
+> [docs/LOCAL-PATCHES.md](./docs/LOCAL-PATCHES.md)，上游 PR 见
+> [pull #1](https://github.com/erinwangstudio-art/dsh-trafficlight/pull/1)。
 
-一个 **dsh 宿主（Host）插件** + **浏览器半区（Web GUI 订阅按钮）** + **macOS 全局悬浮窗**，
-把**你订阅的每个会话**的任务状态用红/黄/绿三色灯在屏幕右上角的悬浮窗里**逐行实时展示**。
+在 DSH 里**订阅会话**，红/黄/绿三色灯就会逐行显示每个会话的任务状态：等待批准的亮红灯、
+执行中的亮黄灯、完成的亮绿灯。灯既可以浮在桌面最上层，也可以固定到侧栏底部。
 
-![红绿灯三种状态](./images/demo.png)
+![悬浮窗：3 个订阅，分别为阻塞、执行中、已完成](./images/panel-expanded.png)
 
-| 灯 | 会话状态 | 触发条件 |
-|---|---|---|
-| 🔴 红灯 | `blocked` 阻塞 | 该会话等待批准（`approval/asked`→`decided`）或向你提问（`ask_user_question`） |
-| 🟡 黄灯 | `running` 执行中 | 该会话回合进行中（`turn/start` … `turn/end`）且未阻塞 |
-| 🟢 绿灯 | `done` 已完成 | 该会话回合已结束 |
-| ⚪ 暗灯 | `idle` / `offline` | 已订阅但尚未开始 / 未连接 dsh |
+## 一眼看懂
 
-**订阅制**：悬浮窗只展示你在 Web GUI 中**主动订阅**的会话（而不是全部会话）。
-订阅入口是会话头部操作行的「🚦 订阅」按钮（`conversation.session.header.actions` 官方附加槽）。
-订阅列表持久化在 `~/.dsh/storages/dsh-trafficlight.json`，重启 dsh web 后保留。
+![悬浮窗结构：数字对应下方说明](./images/panel-anatomy.png)
 
-悬浮窗布局：
-- **顶部常驻标题栏**：订阅数 + 执行中/阻塞计数摘要；左侧 ⠿ 拖动手柄；右侧「− / +」最小化与「×」关闭。
-- **标题栏下方**：每个订阅会话一行——小号红/黄/绿灯 + 会话标题（常驻首条消息）+ 阻塞时显示瞬态
-  `detail`（如「DSH 需要批准: xxx」）；每行右侧「⊖」可**单独取消订阅**，本行立即从悬浮窗消失。
-- 面板宽度/高度**自适应内容**（宽度 300–560pt 随最长标题撑开，高度随行数增长并封顶，
-  超出部分滚动），右侧/顶部锚定，不遮下方操作。
-- 取消订阅后该会话不再出现在列表里；列表清空时显示空态提示。
-- **拖拽**：按住标题栏左侧 ⠿ 手柄即可拖动悬浮窗（系统级 `performDrag`，顺滑跟手）；
-  位置记入 `UserDefaults`，下次启动自动恢复。
+- **标题栏**：拖动柄、订阅摘要（总数 / 执行中 / 阻塞）、归位、折叠、关闭。
+- **每一行**：状态灯 + 会话标题 + 状态和阻塞详情；行末按钮只取消这一条订阅。
+- **订阅制**：只显示你主动订阅的会话，列表持久化，重启 DSH 后保留。
+- **两种形态**：浮动窗始终置顶；归位后面板固定在 DSH 侧栏底部，不再遮挡会话。
 
-> `title`（常驻）与 `detail`（瞬态）由两个独立字段承载：插件把会话标题锁进 `title`，
-> 阻塞文案放进 `detail`，互不覆盖。
-> **标题即会话头部标题**：插件跟随 `session/title` 事件（dsh-session-title 服务追加的
-> 规范标题事件，用户重命名或自动标题都会写该事件），取最新一条——与界面头部显示一致；
-> 尚无该事件时退化为会话首条用户消息。
-
----
-
-## 版本支持（Compatibility）
-
-| 插件版本 | 支持的 dsh | 说明 |
-|---|---|---|
-| **v0.3.x**（当前） | **dsh 0.1.x web profile**（在 `dsh 0.1.5-rc.1` 上验证；bundle `@deepseek-ai/dsh-base` / `@deepseek-ai/dsh-web-app` 0.1.5-rc.1，`@deepseek-ai/cordis` 4.0.x） | 客户端 bundle 以 **scoped 包名注册**（`@chivaskong96/dsh-trafficlight`），注入 `dsh-client-locale` + `dsh-client-ui-conversation`（slots 注册表宿主），适配 `client-modules` 按包名校验/查找工厂的加载语义 |
-| v0.2.x 及更早 | 旧版 dsh 0.1.0-rc.* 加载器 | 客户端以未 scoped 的短 id 注册；在 0.1.5-rc.1 上客户端半区不会加载（头部无「🚦 订阅」按钮） |
-
----
-
-## 快速开始（Quick Start）
+## 快速开始
 
 ```bash
-# 1. 安装（自动激活，无需手动编辑任何文件）
-dsh plugin --profile web add @chivaskong96/dsh-trafficlight
+# 1. 安装插件（按你的 profile 调整 desktop / web）
+dsh plugin --profile desktop add https://github.com/NgoChingYee/dsh-trafficlight.git
+# 如果当前 DSH 版本不支持 Git 安装，先从仓库根目录本地安装：
+# dsh plugin --profile desktop add /path/to/dsh-trafficlight
 
-# 2. 重启
-dsh web
+# 2. 重启 DSH（Desktop 直接退出重开；命令行 profile 用 dsh web）
 ```
 
-> 其它 profile 把 `web` 换成对应名字，或设置 `DSH_PROFILE=tui`。
+> 从 GitHub 安装会执行仓库里的构建产物（`lib/` 和 overlay 二进制已随仓库提交）；
+> 本机工具链与二进制架构不一致时，按下面的「从源码构建」重新编译。
 
 重启后：
-- 打开任意会话，在**会话头部操作行**点「🚦 订阅」→ 该会话进入红绿灯列表；
-- 首次订阅时会**自动拉起** macOS 悬浮窗（未运行时）；窗口右上角逐行显示每个订阅
-  会话的红/黄/绿灯 + 状态，行内「⊖」可单独取消订阅；
-- 无需手动启动悬浮窗（[第 3 节](#3-运行-macos-悬浮窗一般不需要手动)）。
 
----
+1. 打开任意会话，点会话头部的「🚦 订阅」；
+2. 悬浮窗会自动出现（首次订阅时拉起；DSH 重启且存在订阅时自动恢复）；
+3. 再点一次「已订阅」即取消订阅。
 
-## 1. 安装 dsh 插件（dsh profile / npm）
+> 订阅按钮每 2 秒同步一次，所以从悬浮窗或侧栏面板里取消订阅，头部状态也会跟着更新。
 
-```bash
-dsh plugin --profile web add @chivaskong96/dsh-trafficlight
-dsh web
-```
+## 四种灯态
 
-安装时 DSH 会自动检测包内的 `dsh.bundle.patch` 声明，将插件加入 profile 的
-bundles 列表，重启后自动加载 `cordis.patch.yml` 中的 insert 条目。
+![四种灯态：阻塞、执行中、已完成、空闲/未连接](./images/states.png)
 
-### 从源码安装（开发者）
+| 灯 | 状态 | 触发条件 |
+|---|---|---|
+| 🔴 红 | `blocked` | 等待批准，或向你提问（`ask_user_question`） |
+| 🟡 黄 | `running` | 回合正在执行；持续慢呼吸 |
+| 🟢 绿 | `done` | 回合已结束 |
+| ⚪ 灰 | `idle` / `offline` | 已订阅未开始 / 桥未连接 |
 
-```bash
-cd ~/.dsh/profiles/web
-pnpm add --lockfile=false /path/to/dsh-trafficlight
-dsh web
-```
+红灯会快速呼吸并向外扩散光环；呼吸次数和速度可在 DSH 设置面板调整。
 
-改源码后需重新构建：
+## 两种呈现方式
 
-```bash
-npm run build
-```
+![浮动悬浮窗与归位到侧栏](./images/modes.png)
 
-## 本分支新增（0.4.0-fork.1）
+**浮动悬浮窗**：默认形态，始终置顶、跨桌面空间，位置会被记住。
 
-- **归位模式**：悬浮窗标题栏新增「侧栏」按钮，或把悬浮窗拖进侧栏底部的虚线占位区，即可固定到
-  DSH 侧栏（账号行上方）；侧栏面板可点行跳转、取消订阅，点「悬浮窗」切回浮动。
-- **左右双边缘缩放**：拖左右边缘都会让被拖的那条边跟随鼠标；悬停时边缘亮起并显示 ↔ 徽章。
-- **原生 Liquid Glass**：macOS 26+ 使用系统玻璃材质，设置里的"不透明度"现在真正控制玻璃浓度
-  （左侧清透、右侧磨砂）；旧系统自动回退。
-- **执行中呼吸**：黄灯持续慢呼吸，红灯快速呼吸并向外扩散光环（设置里的呼吸次数/速度仍控制
-  状态切换时的强调脉冲）。
+**归位到侧栏**：点标题栏「侧栏」按钮，或把悬浮窗拖进侧栏底部的虚线占位区。归位后：
 
-## 2. 使用
+- 常驻虚线占位不遮挡会话列表；
+- 点行即可跳转到对应会话，行内 ✕ 取消订阅，点「悬浮窗」切回浮动；
+- 12 秒（归位时）/ 15 秒（重启后）没有心跳会自动退回浮动，避免灯丢失。
 
-1. 打开一个会话，在**会话头部操作行**点「🚦 订阅」→ 该会话进入红绿灯列表。
-2. 再点一次（「已订阅」状态）即取消订阅。
-3. 屏幕右上角悬浮窗逐行显示每个订阅会话的红/黄/绿灯；行内「⊖」可随时移除单条。
-4. 菜单栏 🚦 可看聚合状态 / 退出。
+## 交互速查
 
-## 3. 运行 macOS 悬浮窗（一般不需要手动）
+| 想做的事 | 操作 |
+|---|---|
+| 移动窗口 | 按住标题栏左侧 ⠿ 拖动（按指针位移，跟手不跳位） |
+| 调整宽度 | 拖左右边缘；悬停时边缘亮起并显示 ↔ 提示 |
+| 收起 / 展开 | 标题栏「−」/「+」，收成 58pt 的标题条 |
+| 归位 / 取回 | 标题栏「侧栏」按钮，或拖进侧栏底部虚线区；侧栏面板点「悬浮窗」取回 |
+| 取消一条订阅 | 浮动窗行末 ⊖ / 侧栏面板行末 ✕ |
+| 关闭红绿灯 | 标题栏 ✕ = 取消全部订阅并退出；只想暂时隐藏用菜单栏「🚦 → 隐藏悬浮窗」 |
+| 菜单栏 | 查看聚合状态、显示 / 隐藏悬浮窗、退出 |
 
-插件会在**首次点击「🚦 订阅」时自动拉起悬浮窗**（若未运行），dsh web 重启且存在
-存量订阅时也会自动恢复。因此日常使用无需手动启动。
+折叠后只保留一条 58pt 标题栏，状态灯和计数仍然可见：
 
-> ⚠️ **悬浮窗是「两进程」架构**：dsh 插件 / `mock-bridge.mjs` 只是数据源（提供 JSON），
-> 真正画红绿灯的是独立的 Swift app。自动启动由宿主进程 spawn（`overlay-launcher.ts`，
-> 二进制路径可用 `DSH_TL_OVERLAY_BIN` 覆盖；完整 `pnpm add` 安装不含 overlay/ 时跳过）。
-> 手动启动（调试用）：
+![折叠状态：58pt 标题条](./images/panel-collapsed.png)
 
-```bash
-# 终端 A：先起数据源（二选一）
-node mock-bridge.mjs                       # 演示用：3 个假会话循环红/黄/绿 + 支持订阅增删
-# 或：装好 dsh 插件并启动 dsh web（插件自带桥）
+> 面板是**非激活窗口**（不抢焦点），macOS 不会为它改变系统光标，因此缩放边缘用绘制的
+> 高亮条 + ↔ 徽章提示，而不是鼠标指针变化。
 
-# 终端 B：一句话启动悬浮窗（自动重编 + 后台运行；重复执行会提示已在运行，
-# 加 --restart 强制重启）
-bash scripts/trafficlight.sh
-# 日志：~/.dsh/trafficlight-overlay.log（可用 TL_LOG=/path 覆盖）
-```
+## 设置
 
-未连接 dsh（桥未起）时显示「未连接 DSH」；无订阅时显示空态提示。
+在 DSH 设置面板的插件通用区：
 
-### 关闭悬浮窗
-1. 胶囊右上角「×」按钮。
-2. 菜单栏 🚦 →「退出红绿灯」。
-3. `pkill -f TrafficLightOverlay`；重新打开再跑一次可执行文件即可。
-
-> **构建提示**：`swift build` 默认给子进程套 `sandbox-exec`，沙箱环境下会报
-> `Operation not permitted`；`build.sh` 已加 `--disable-sandbox` 规避。
-> SwiftPM 产出裸可执行文件（非 `.app`），代码里 `setActivationPolicy(.accessory)`
-> 使其表现为无 Dock 图标的菜单栏 agent；要纯正 `.app` 请用 Xcode 打开（`Info.plist` 已含 `LSUIElement`）。
-
-## 4. 不跑 dsh 也能预览（Mock 桥）
-
-```bash
-cd <dsh-trafficlight 目录>
-node mock-bridge.mjs          # 3 个演示会话循环 running/blocked/done，支持订阅增删
-# 另开终端启动 overlay，即可看到多行红绿灯切换 + 行内取消订阅
-```
-
----
+- **悬浮窗不透明度**：控制玻璃浓度（越透越清亮，越浓越磨砂）；
+- **极简模式**：只显示拖动柄、关闭按钮和一个跟随「最近一次更新」的大信号灯；
+- **呼吸次数 / 速度**：控制状态切换时的强调脉冲。
 
 ## 架构
 
-```
-┌─────────────────────────┐         session/event 事件流
-│   dsh web (host 进程)    │  ◄───────────────────────────────  (cordis 火流)
-│  ┌───────────────────┐  │
-│  │ dsh-trafficlight  │  │  维护 每会话 状态 (idle/running/blocked/done)
-│  │  StatusMachine    │  │  + 订阅集合 SubscriptionStore(持久化 JSON)
-│  └─────────┬─────────┘  │
-│            │ snapshot   │
-│  ┌─────────┴─────────┐  │  loopback HTTP (固定端口 18765) + SSE
-│  │  bridge (node:http)│  │  GET /state · GET /stream
-│  └─────┬───────┬──────┘  │  GET|POST|DELETE /subscriptions
-└────────┼───────┼─────────┘
-         │       │
-   ┌─────┴──┐    │  http://127.0.0.1:18765/state  (每 0.7s 轮询)
-   │ Web GUI │    └───────────────────────────────┐
-   │ 🚦订阅键 │  (POST/DELETE /api/dsh-tl/subscriptions)  │
-   └─────────┘                                    ▼
-                                     ┌────────────────────────────┐
-                                     │  TrafficLightOverlay (Swift) │
-                                     │  多行列表：每会话一行红绿灯    │
-                                     │  行内 ⊖ = 取消订阅            │
-                                     └────────────────────────────┘
+![数据流：宿主、Bridge、Web GUI 与悬浮窗](./images/architecture.png)
+
+- **宿主**：`session/event` → 每会话四态；订阅集合持久化在 `~/.dsh/storages/`。
+- **Bridge**：`127.0.0.1:18765` 上的仅本机服务——`GET /state`、`GET /stream`（SSE）、
+  订阅增删、`/mode` 与 `/dockbeat`；浏览器半区走 dsh webServer 的 `/api/dsh-tl/*`。
+- **两个消费者**：Web GUI（会话头部订阅按钮 + 侧栏归位面板）和 Swift 悬浮窗
+  （0.7s 轮询 + SSE）。两边共享同一份订阅与状态。
+- 除 Node 内置模块和 AppKit/SwiftUI 外没有额外运行时依赖。
+
+## 从源码构建
+
+```bash
+# 宿主 + 浏览器半区
+npm install
+npm run build
+
+# macOS 悬浮窗（Swift 6.4 / macOS 13+）
+cd overlay
+bash build.sh
 ```
 
-设计要点：
-- **原生 overlay**：`NSPanel` 无边框、透明、鼠标穿透（仅拖动手柄/关闭/取消订阅按钮可点）、
-  置顶（level 6，低于 macOS 告警弹窗）、跨空间 / 全屏保持置顶、不抢焦点。
-- **本地桥接**：插件用 `node:http` 在 `127.0.0.1:18765` 起仅本机可达的服务；同时挂
-  dsh webServer 前缀 `/api/dsh-tl/*` 供浏览器半区使用（loopback 校验）。
-- **浏览器半区**：`src/client/index.tsx` 注册 `conversation.session.header.actions` 槽
-  条目（会话头部的「🚦 订阅」按钮），经 `window.__ModuleLoader__` 由宿主扫描装载。
-  会话列表侧栏 "…" 菜单（重命名/fork/归档）在 `dsh-client-ui-workspace` 中为硬编码且无
-  扩展点，故订阅入口放在会话头部操作行（同为会话绑定位置、官方支持的附加槽）。
-- **零额外运行时依赖**：桥接只用 Node 内置 `http`；overlay 只用 SwiftUI/AppKit。
+> `build.sh` 会自动处理两个本机坑：SwiftPM 的沙箱（加 `--disable-sandbox`）和
+> SDK / 编译器版本不匹配（默认切到 `MacOSX15.4.sdk`，可用
+> `DSH_TL_OVERLAY_SDKROOT` 覆盖）。也可以手动用临时 SwiftPM 布局编译，见
+> [docs/LOCAL-PATCHES.md](./docs/LOCAL-PATCHES.md)。
 
----
+> **构建提示**：官方 `pnpm install` 依赖的 `@deepseek-ai/dsh-client-runtime@^0.1.5-rc.1`
+> 在公共源可能不存在，本机若因此失败，可参考 [FORK-NOTES.md](./FORK-NOTES.md) 用本地
+> DSH 运行时构建，或直接使用仓库中已构建的 `lib/` 与 overlay 二进制。
+> SwiftPM 产出的是裸可执行文件（非 `.app`），`setActivationPolicy(.accessory)` 让它表现为
+> 无 Dock 图标的菜单栏 agent；`overlay/Info.plist` 已含 `LSUIElement`，需要 `.app` 时可用
+> Xcode 打开。
 
-## 目录
+**调试用 mock 桥**（不启动 DSH 也能预览）：
+
+```bash
+node mock-bridge.mjs          # 3 个演示会话循环 running / blocked / done
+bash scripts/trafficlight.sh  # 启动悬浮窗（自动重编；--restart 强制重启）
+```
+
+## 兼容性
+
+| 插件 | DSH | 说明 |
+|---|---|---|
+| **0.4.0-fork.1**（当前） | DSH Desktop `0.2.2-rc.3`、dsh web `0.1.5-rc.1` | 客户端以 scoped 包名注册，需要 `dsh-client-locale` / `dsh-client-ui-conversation` 槽位宿主 |
+| 0.3.x | dsh `0.1.x` web profile | 无归位 / 玻璃 / 呼吸特性 |
+
+## 已知限制
+
+- **会话侧栏「…」菜单不可扩展**：`dsh-client-ui-workspace` 里是硬编码菜单，所以订阅入口
+  放在官方槽位 `conversation.session.header.actions`（会话头部操作行）。
+- **非激活窗口无法改变系统光标**：改用绘制的边缘高亮与 ↔ 提示（见上）。
+- **仓库内的 overlay 二进制**为 arm64、macOS 13 构建；其他架构/系统请自行编译。
+- 仅支持 macOS（悬浮窗依赖 AppKit / SwiftUI）。
+
+## 目录结构
 
 ```
 dsh-trafficlight/
-├── package.json / tsconfig*.json        # 宿主插件 + 浏览器半区（dsh.client 声明）
-├── .gitignore / .npmignore              # git 与 npm 发布规则
-├── LICENSE                              # MIT 开源证书
 ├── src/
-│   ├── index.ts                         # apply(ctx)：挂载火流 + 桥 + 页内路由 + 提示段
-│   ├── core/types.ts                    # 前后共享 wire 类型（多会话快照）
+│   ├── index.ts                  # apply(ctx)：火流 + 桥 + 页内路由
+│   ├── core/types.ts             # 前后共享 wire 类型
 │   ├── host/
-│   │   ├── status.ts                    # 状态机：session/event → 每会话 4 态 + 聚合 + 标题回填
-│   │   ├── subscriptions.ts             # 订阅集合 + 持久化（~/.dsh/storages）
-│   │   ├── overlay-launcher.ts          # 订阅时自动拉起 macOS 悬浮窗
-│   │   └── bridge.ts                    # 独立 loopback 桥 (18765) + /api/dsh-tl/* 路由
-│   └── client/index.tsx                 # 浏览器半区：会话头部「🚦 订阅」槽按钮
-├── mock-bridge.mjs                      # 无 dsh 时的演示桥（多会话 + 订阅增删）
-├── scripts/
-│   └── trafficlight.sh                  # 一键启动/重启悬浮窗
-└── overlay/                             # 原生 macOS 悬浮窗（Swift，多行列表）
-    ├── TrafficLightApp.swift            # @main App + 菜单栏 🚦 + 面板拖动/自适应
-    ├── TrafficLightWindow.swift         # 透明/置顶/毛玻璃 NSPanel + 原生拖拽条
-    ├── TrafficLightView.swift           # 多行列表：每会话一行灯 + 标题 + 状态 + 取消订阅
-    ├── StatusClient.swift               # 轮询桥 → @Published 会话列表 + 最近变更高亮
-    ├── Package.swift / build.sh / Info.plist
+│   │   ├── status.ts             # 状态机：session/event → 四态 + 聚合 + 标题
+│   │   ├── subscriptions.ts      # 订阅集合 + 持久化
+│   │   ├── overlay-launcher.ts   # 订阅时自动拉起悬浮窗
+│   │   ├── settings.ts           # 透明度 / 极简模式 / 呼吸参数 / 呈现模式
+│   │   └── bridge.ts             # loopback 桥 (18765) + /api/dsh-tl/*
+│   └── client/index.tsx          # 订阅按钮 + 侧栏归位面板
+├── overlay/                      # 原生 macOS 悬浮窗（Swift）
+│   ├── TrafficLightApp.swift     # 面板/拖动/缩放/折叠/归位
+│   ├── TrafficLightWindow.swift  # 透明置顶 NSPanel + Liquid Glass
+│   ├── TrafficLightView.swift    # 多行灯列表 + 折叠条
+│   └── StatusClient.swift        # 轮询桥 → @Published 快照
+├── images/                       # README 图示
+├── docs/LOCAL-PATCHES.md         # 完整补丁与排查记录
+├── mock-bridge.mjs               # 无 DSH 时的演示桥
+└── scripts/trafficlight.sh       # 一键启动悬浮窗
 ```
 
-## 状态映射细节（实现逻辑）
+## 许可证
 
-- **会话标题（跟随头部）**：跟随 `session/title` 事件（含用户重命名与自动标题，取最新一条），
-  与界面会话头部一致；尚无该事件时退化为首条用户消息，并在会话日志水合后回填权威标题。
-- **每会话状态**：`blocked`（有未决批准/提问）> `running`（回合打开）> `done`（回合结束且
-  有标题）> `idle`（已订阅未开始）。未订阅的会话仍被跟踪但**不出现在快照里**（订阅列表为准）。
-- **聚合状态**：任一订阅会话阻塞 → 红；否则任一运行 → 黄；否则全部完成 → 绿；无订阅 → 暗。
-- `turn/start` → `open=true`，清阻塞；`turn/end` → `open=false`，清阻塞。
-- `approval/asked`/`approval/decided` 与 `tool/call(ask_user_question)`/`tool/result` →
-  维护每会话阻塞集合；阻塞文案放 `detail`。
-- 订阅变更（Web 按钮 / overlay 行内 ⊖ / API）立即生效并持久化、广播给所有客户端。
-
-## 已知限制 / 可扩展点
-
-- **会话侧栏 "…" 菜单不可扩展**：`dsh-client-ui-workspace` 的 `SessionNodeItem` 菜单为
-  硬编码（重命名/fork/归档），无插槽；订阅入口因此放在会话头部操作行
-  （`conversation.session.header.actions`，官方附加槽）。若坚持要进 "…" 菜单，只能对
-  `dsh-client-ui-workspace` 做 DOM 注入（脆弱、随版本漂移），或改官方包源码。
-- **窗口自适应已支持**：宽度随最长行标题 300–560pt，高度随行数（默认最多显示 6 行，
-  超出滚动区域），右侧/顶部锚定，避免早期「初始拟合尺寸冻结导致标题截成 …」的问题。
-- **标题来源**：`title` 取用户首条文本；如需 dsh 的会话总结标题，可接入 `session-title` 包。
-- **单屏渲染**：仅在主屏；多屏可参照 `PassThroughWindow` 按 `NSScreen.screens` 每屏一个。
-- **端到端 .app**：编译/签名建议用 Xcode（`overlay/Info.plist` 已就绪）。
+[MIT](./LICENSE)
