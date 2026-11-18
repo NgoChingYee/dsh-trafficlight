@@ -172,3 +172,67 @@ color: active ? "#5b8cff" : "currentColor",
 验证结果：bridge `/state` 返回两个真实标题：`test插件` 与 `💻 Yayi-B端`；持久化文件同时包含两个订阅 ID 与标题，重启/重载后可恢复。
 
 标题优先级修正：`SubscriptionStore.title()` 每次都先读 DSH 会话标题投影 `~/.dsh/storages/session_projcache/sessions/<id>.json` 的 `record.rows.title.val`，再回退到持久化标题；`StatusMachine.snapshot()` 只有 `t.titleAuthoritative` 为真时才使用活动会话的 `t.sessionTitle`。避免新用户消息把真实标题覆盖成消息原文。此前缓存被消息原文污染时，需要把订阅文件 `titles` 中的对应值纠正为投影标题，或等待下一次投影刷新。
+
+---
+
+# 0.4.0 交互与渲染补丁
+
+## 1. 点击会话行恢复窗口
+
+**问题**：`StatusClient.openSession` 在 `/focus` 成功后执行 `NSWorkspace.shared.open(dsh://open)`，
+DSH Desktop NEXT 的 Info.plist 没有 `CFBundleURLTypes`，系统弹「没有应用可打开 URL dsh://open」。
+
+**修复**：改用 LaunchServices 重新打开（等价点 Dock 图标），DSH 的 `app.on("activate", openMain)`
+会执行 `show(window)`，其中包含 `window.restore()`，可同时还原最小化窗口：
+
+```swift
+let config = NSWorkspace.OpenConfiguration()
+config.activates = true
+config.createsNewApplicationInstance = false
+NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ in
+  if app == nil { activateRunning(bundleId) }   // 兜底
+}
+```
+
+文件：`overlay/StatusClient.swift`（`raiseDesktopApp`）。
+
+## 2. 部署目标 macOS 13
+
+**问题**：DSH 最低支持 macOS 13，但二进制 minos=14，且代码用了 macOS 14 的两参数 `onChange`。
+
+**修复**：`overlay/Package.swift` 改为 `.macOS(.v13)`；`TrafficLightView.swift` 中 6 处
+`.onChange(of:) { _, new in }` 改为单参数闭包（macOS 11 API）。
+
+## 3. 呼吸触发与持续呼吸
+
+**问题**：① 行内呼吸由 `recent`（6 秒窗口布尔值）触发，两次变化间隔小于 6 秒时无 false→true 跳变，
+呼吸被跳过；② `repeatForever` 动画被 0.7s 状态轮询的重渲染重置，灯几乎不动。
+
+**修复**：① `StatusClient` 维护 `stateChangeTick`（每会话单调计数），行内 `.onChange(of: changeTick)`；
+② 持续呼吸改为 `TimelineView(.animation)` 按时间计算缩放（`ContinuousBreathing`），红灯光环同理
+（`AlertRipple`，0.9s 扩散一圈）。
+
+## 4. 缩放交互
+
+- 左把手：`setManualWidth(width, keepRightEdge: true)`，右边缘固定；
+- 右把手：`keepRightEdge: false`，左边缘固定；
+- 悬停：始终生效的 tracking area + 绘制的亮条与 ↔ 徽章（非激活面板无法改系统光标）。
+
+文件：`overlay/TrafficLightWindow.swift`、`overlay/TrafficLightView.swift`、`overlay/TrafficLightApp.swift`。
+
+## 5. Liquid Glass 底座
+
+- 面板内容改为 `GlassPanelView`：磨砂层 → 玻璃着色 → 内容，修掉"磨砂层盖住 SwiftUI 背景导致透明度无效"；
+- macOS 26+ 用 `NSGlassEffectView`（`if #available`），`tintColor` 随滑块变化，`clear`/`regular` 两档；
+- 旧系统回退 `NSVisualEffectView`；`DSH_TL_FORCE_VIBRANCY=1` 可强制兜底。
+
+## 6. 归位模式（floating ↔ docked）
+
+- `settings.ts` 增加 `mode` 持久化与 `clampMode`；
+- `status.ts` 快照增加 `mode` / `dockHealthy`，`setMode` 带 12s 自动回退安全网，`attach` 带
+  15s 重启安全网；
+- `bridge.ts` 增加 `/mode`（独立桥）、`/api/dsh-tl/mode`、`POST /api/dsh-tl/focus`、
+  `/api/dsh-tl/dockbeat`；
+- 客户端 `sidebar.footer.action` 槽位渲染常驻虚线占位（`docked` 时渲染真实面板），占位在布局流里，
+  列表底部止于其上缘；
+- 悬浮窗拖入判定区（侧栏底部、账号行上方）时显示全磨砂提示，松手归位；`endDrag` 用鼠标落点判定。
