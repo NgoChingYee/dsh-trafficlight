@@ -183,6 +183,17 @@ final class PassThroughEffectView: NSVisualEffectView {
 /// the fallback for older systems and to keep text legible when the clear
 /// style is very transparent.
 final class GlassPanelView: NSView {
+    // The window must be free to be resized by us only. Reporting a concrete
+    // intrinsic/fitting size makes AppKit's constraint pass resize the window
+    // (and rewrite its origin) whenever the SwiftUI content changes, which is
+    // what caused the collapsed bar's leftover area and the drift on toggles.
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+    override var fittingSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+    }
+
     let effectView = NSVisualEffectView()
     let hostingView: NSView
     private var liquidGlass: NSView?

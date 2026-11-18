@@ -260,6 +260,23 @@ NSWorkspace.shared.openApplication(at: appURL, configuration: config) { app, _ i
 > `-[NSWindow(NSConstraintBasedLayoutInternal) _changeWindowFrameFromConstraintsIfNecessary]`
 > 改写；这正是"折叠残留磨砂区 + 顶边漂移"的来源。
 
+### 最终修复：不再向窗口暴露内容的固有尺寸
+
+约束重排的触发源是 `GlassPanelView` 作为 `contentView` 时暴露的 `fittingSize`/`intrinsicContentSize`：
+SwiftUI 内容一变，AppKit 就按这个尺寸调整窗口并改写原点。修复：
+
+```swift
+override var intrinsicContentSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+}
+override var fittingSize: NSSize {
+    NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+}
+```
+
+修复后同一调用栈不再出现，窗口只由我们自己的代码设置。配合折叠态固定 58pt 布局、按钮取消
+`withAnimation`、以及下一 runloop 的顶边重新断言，连续切换与拖动后释放都不再漂移。
+
 ## 关闭红绿灯后「已订阅」不同步
 
 **问题**：头部订阅按钮只在挂载时读一次订阅集合，悬浮窗里取消订阅后不会刷新；而关闭按钮只是退出
