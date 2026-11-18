@@ -1,0 +1,6 @@
+# dsh-trafficlight bundle patch: inserts the traffic-light host plugin
+# into the profile's cordis entry tree.
+
+- insert:
+    - id: dsh-trafficlight
+      name: '@chivaskong96/dsh-trafficlight'

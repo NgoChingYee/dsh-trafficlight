@@ -1,0 +1,148 @@
+import AppKit
+import Foundation
+import SwiftUI
+
+/// Polls the dsh-trafficlight bridge and exposes the subscribed session list
+/// to SwiftUI — one traffic-light row per subscribed session.
+final class StatusClient: ObservableObject {
+    @Published var state: TrafficState = .offline
+    @Published var title: String = "DSH"
+    @Published var sessions: [SessionStatus] = []
+    @Published var detail: String = ""
+    /// User-configured overlay opacity (0.1..1); applied to the panel window.
+    @Published var opacity: Double = 1
+    /// User-configured minimal single-lamp mode; applied to the panel layout.
+    @Published var minimalMode: Bool = false
+    /// Breathing beats per state change; consumed by the lamps.
+    @Published var breathCount: Int = 3
+    /// Breathing beat width (one scale-sweep) in seconds; consumed by the lamps.
+    @Published var breathBeat: Double = 0.35
+    /// The most-recently-changed subscribed session's light state. Drives the
+    /// big lamp in minimal mode — it reflects the latest update regardless of
+    /// which session produced it.
+    @Published private(set) var latestState: TrafficState = .offline
+
+    private let url: URL
+    private var timer: Timer?
+    /// sessionId -> when its state/detail last changed (used to spotlight
+    /// recently-changed rows with a temporarily larger lamp).
+    private var stateChangedAt: [String: Date] = [:]
+    /// Epoch of the latest observed change; the newest change wins the big lamp.
+    private var lastChangeAt: Date = .distantPast
+
+    /// Whether this session's state changed within the given window.
+    func isStateRecent(_ sessionId: String, within: TimeInterval = 6) -> Bool {
+        guard let date = stateChangedAt[sessionId] else { return false }
+        return Date().timeIntervalSince(date) < within
+    }
+
+    private func recordChange(_ id: String, newState: TrafficState) {
+        let now = Date()
+        stateChangedAt[id] = now
+        // Opportunistic prune: drop entries older than the recency window.
+        if stateChangedAt.count > 32 {
+            let cutoff = Date(timeIntervalSinceNow: -6)
+            stateChangedAt = stateChangedAt.filter { $0.value > cutoff }
+        }
+        // The big lamp follows the newest change in the whole subscribed set.
+        if now >= lastChangeAt {
+            lastChangeAt = now
+            latestState = newState
+        }
+    }
+
+    /// Detect state transitions for newly freshened rows and record them.
+    private func trackChanges(_ newSessions: [SessionStatus]) {
+        let old = Dictionary(uniqueKeysWithValues: sessions.map { ($0.sessionId, $0) })
+        for s in newSessions {
+            if let prev = old[s.sessionId] {
+                if prev.state != s.state || (prev.detail ?? "") != (s.detail ?? "") {
+                    recordChange(s.sessionId, newState: TrafficState(rawValue: s.state) ?? .offline)
+                }
+            } else {
+                recordChange(s.sessionId, newState: TrafficState(rawValue: s.state) ?? .offline) // brand-new row counts as a change
+            }
+        }
+    }
+
+    init(port: Int? = nil) {
+        let envPort = ProcessInfo.processInfo.environment["DSH_TL_PORT"].flatMap { Int($0) }
+        let effectivePort = port ?? envPort ?? 18_765
+        self.url = URL(string: "http://127.0.0.1:\(effectivePort)/state")!
+        startPolling()
+    }
+
+    func startPolling() {
+        poll()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: true) { [weak self] _ in
+            self?.poll()
+        }
+        timer?.tolerance = 0.25
+    }
+
+    /// Ask the DSH web client to open this subscribed session, then raise the
+    /// desktop window through its supported `dsh://open` protocol handler.
+    func openSession(_ sessionId: String) {
+        guard !sessionId.isEmpty,
+              let endpoint = URL(string: "http://127.0.0.1:\(url.port ?? 18_765)/focus") else { return }
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["sessionId": sessionId])
+        request.timeoutInterval = 2
+        URLSession.shared.dataTask(with: request) { _, response, _ in
+            guard (response as? HTTPURLResponse)?.statusCode == 202,
+                  let desktop = URL(string: "dsh://open") else { return }
+            DispatchQueue.main.async { NSWorkspace.shared.open(desktop) }
+        }.resume()
+    }
+
+    /// Remove a row (unsubscribe). The bridge deletes the subscription and the
+    /// next poll drops the session from the list.
+    func unsubscribe(_ sessionId: String) {
+        guard var comps = URLComponents(string: url.absoluteString) else { return }
+        comps.path = "/subscriptions"
+        comps.queryItems = [URLQueryItem(name: "sessionId", value: sessionId)]
+        guard let target = comps.url else { return }
+        var request = URLRequest(url: target)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 2
+        URLSession.shared.dataTask(with: request).resume()
+    }
+
+    private func poll() {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 0.6
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            guard let self else { return }
+            guard let data, error == nil,
+                  let snap = try? JSONDecoder().decode(TrafficSnapshot.self, from: data) else {
+                DispatchQueue.main.async { self.state = .offline }
+                return
+            }
+            DispatchQueue.main.async {
+                if snap.sessions.isEmpty {
+                    // No subscriptions yet: keep the latestState grey so the
+                    // minimal lamp shows idle instead of a stale color.
+                    self.latestState = .offline
+                }
+                self.trackChanges(snap.sessions)
+                self.state = TrafficState(rawValue: snap.state) ?? .offline
+                self.title = snap.title
+                self.sessions = snap.sessions
+                self.detail = snap.detail ?? ""
+                if let opacity = snap.opacity {
+                    self.opacity = min(1, max(0.1, opacity))
+                }
+                self.minimalMode = snap.minimalMode ?? false
+                if let breaths = snap.breathCount {
+                    self.breathCount = min(6, max(1, breaths))
+                }
+                if let beat = snap.breathBeat {
+                    self.breathBeat = min(1.0, max(0.1, beat))
+                }
+            }
+        }
+        task.resume()
+    }
+}
